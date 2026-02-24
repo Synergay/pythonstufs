@@ -454,4 +454,241 @@ gt.exec.get_workspace_items = function(args)
 	return hs:JSONEncode({count = #out; parent = gpath(parent); items = out});
 end;
 
+local spylog = {};
+local spymax = 200;
+local spyactive = false;
+local oldnc = nil;
+
+local function sarg(v)
+	local t = typeof(v);
+	if t == "string" then return {t = "string"; v = v:sub(1, 300)};
+	elseif t == "number" then return {t = "number"; v = v};
+	elseif t == "boolean" then return {t = "boolean"; v = v};
+	elseif t == "nil" then return {t = "nil"};
+	elseif t == "Instance" then return {t = "Instance"; v = gpath(v); class = v.ClassName};
+	elseif t == "Vector3" then return {t = "Vector3"; v = {x = v.X; y = v.Y; z = v.Z}};
+	elseif t == "Vector2" then return {t = "Vector2"; v = {x = v.X; y = v.Y}};
+	elseif t == "CFrame" then
+		local p = v.Position;
+		local rx, ry, rz = v:ToEulerAnglesXYZ();
+		return {t = "CFrame"; pos = {x = p.X; y = p.Y; z = p.Z}; rot = {x = math.deg(rx); y = math.deg(ry); z = math.deg(rz)}};
+	elseif t == "Color3" then return {t = "Color3"; v = {r = v.R; g = v.G; b = v.B}};
+	elseif t == "BrickColor" then return {t = "BrickColor"; v = v.Name};
+	elseif t == "EnumItem" then return {t = "EnumItem"; v = tostring(v)};
+	elseif t == "UDim2" then return {t = "UDim2"; v = tostring(v)};
+	elseif t == "NumberSequence" or t == "ColorSequence" then return {t = t; v = tostring(v):sub(1, 200)};
+	elseif t == "table" then
+		local out = {};
+		local cnt = 0;
+		for k, val in next, v do
+			if cnt >= 20 then out["_truncated"] = true; break; end;
+			out[tostring(k)] = sarg(val);
+			cnt += 1;
+		end;
+		return {t = "table"; v = out};
+	else return {t = t; v = tostring(v):sub(1, 100)};
+	end;
+end;
+
+table.insert(gt.defs, {
+	type = "function";
+	["function"] = {
+		name = "spy_remotes";
+		description = "Start or stop the remote spy. When active, hooks __namecall to capture ALL RemoteEvent:FireServer and RemoteFunction:InvokeServer calls with their full arguments. Use get_remote_log to retrieve captured data.";
+		parameters = {
+			type = "object";
+			properties = {
+				action = {type = "string"; description = "start or stop"};
+				filter = {type = "string"; description = "Optional remote name substring to filter (case insensitive). Leave empty to capture all."};
+			};
+			required = {"action"};
+		};
+	};
+});
+
+table.insert(gt.defs, {
+	type = "function";
+	["function"] = {
+		name = "get_remote_log";
+		description = "Get the captured remote fire log from spy_remotes. Shows remote name, path, method, and all arguments with types. Returns newest entries first. Use this after spy_remotes start to see what the game sends.";
+		parameters = {
+			type = "object";
+			properties = {
+				count = {type = "number"; description = "Max entries to return (default 20, max 50)"};
+				filter = {type = "string"; description = "Optional remote name substring filter"};
+			};
+		};
+	};
+});
+
+table.insert(gt.defs, {
+	type = "function";
+	["function"] = {
+		name = "fire_remote";
+		description = "Fire a RemoteEvent or invoke a RemoteFunction with specified arguments. Args are JSON-encoded. Supports Instance paths (prefix with 'inst:'), Vector3 (prefix with 'v3:x,y,z'), CFrame (prefix with 'cf:x,y,z'), numbers, booleans, strings, and tables.";
+		parameters = {
+			type = "object";
+			properties = {
+				path = {type = "string"; description = "Instance path to the remote e.g. game.ReplicatedStorage.MyRemote"};
+				method = {type = "string"; description = "FireServer or InvokeServer. Defaults to FireServer"};
+				args = {type = "string"; description = 'JSON array of arguments. Use prefixes for types: "inst:game.Workspace.Part", "v3:1,2,3", "cf:1,2,3", "enum:Enum.Material.Plastic". Plain strings/numbers/bools are auto-detected. Tables use JSON objects.'};
+			};
+			required = {"path"};
+		};
+	};
+});
+
+local spyfilter = nil;
+
+local function startspy(filt)
+	if spyactive then return '{"status":"already active","entries":' .. #spylog .. '}'; end;
+	spyfilter = filt and filt:lower() or nil;
+	spylog = {};
+	local mt = getrawmetatable(game);
+	if not mt then return '{"error":"getrawmetatable not available"}'; end;
+	oldnc = mt.__namecall;
+	local hkfn = newcclosure(function(self, ...)
+		local method = getnamecallmethod();
+		if (method == "FireServer" or method == "InvokeServer") and (self:IsA("RemoteEvent") or self:IsA("RemoteFunction")) then
+			local rname = self.Name:lower();
+			if not spyfilter or rname:find(spyfilter, 1, true) then
+				local a = {...};
+				local sa = {};
+				for i = 1, #a do sa[i] = sarg(a[i]); end;
+				if #spylog >= spymax then table.remove(spylog, 1); end;
+				table.insert(spylog, {
+					remote = self.Name;
+					path = gpath(self);
+					class = self.ClassName;
+					method = method;
+					args = sa;
+					argc = #a;
+					time = tick();
+				});
+			end;
+		end;
+		return oldnc(self, ...);
+	end);
+	local rok = pcall(function()
+		if setreadonly then setreadonly(mt, false); end;
+		mt.__namecall = hkfn;
+		if setreadonly then setreadonly(mt, true); end;
+	end);
+	if not rok then
+		local hok = pcall(function()
+			hookmetamethod(game, "__namecall", hkfn);
+		end);
+		if not hok then return '{"error":"failed to hook __namecall"}'; end;
+	end;
+	spyactive = true;
+	return '{"status":"started","filter":' .. (spyfilter and ('"' .. spyfilter .. '"') or "null") .. '}';
+end;
+
+local function stopspy()
+	if not spyactive then return '{"status":"not active"}'; end;
+	if oldnc then
+		pcall(function()
+			local mt = getrawmetatable(game);
+			if setreadonly then setreadonly(mt, false); end;
+			mt.__namecall = oldnc;
+			if setreadonly then setreadonly(mt, true); end;
+		end);
+	end;
+	spyactive = false;
+	return '{"status":"stopped","captured":' .. #spylog .. '}';
+end;
+
+gt.exec.spy_remotes = function(args)
+	local act = args.action and args.action:lower() or "start";
+	if act == "start" then return startspy(args.filter);
+	elseif act == "stop" then return stopspy();
+	else return '{"error":"invalid action, use start or stop"}';
+	end;
+end;
+
+gt.exec.get_remote_log = function(args)
+	local cnt = math.min(tonumber(args.count) or 20, 50);
+	local filt = args.filter and args.filter:lower() or nil;
+	local out = {};
+	for i = #spylog, 1, -1 do
+		if #out >= cnt then break; end;
+		local e = spylog[i];
+		if not filt or e.remote:lower():find(filt, 1, true) then
+			table.insert(out, e);
+		end;
+	end;
+	return hs:JSONEncode({active = spyactive; total = #spylog; shown = #out; log = out});
+end;
+
+local function parsearg(v)
+	if type(v) == "string" then
+		if v:sub(1, 5) == "inst:" then return resolve(v:sub(6));
+		elseif v:sub(1, 3) == "v3:" then
+			local parts = v:sub(4):split(",");
+			return Vector3.new(tonumber(parts[1]) or 0, tonumber(parts[2]) or 0, tonumber(parts[3]) or 0);
+		elseif v:sub(1, 3) == "cf:" then
+			local parts = v:sub(4):split(",");
+			return CFrame.new(tonumber(parts[1]) or 0, tonumber(parts[2]) or 0, tonumber(parts[3]) or 0);
+		elseif v:sub(1, 5) == "enum:" then
+			local ok, ev = pcall(function()
+				local p = v:sub(6);
+				local segs = p:split(".");
+				if #segs == 3 and segs[1] == "Enum" then
+					return Enum[segs[2]][segs[3]];
+				end;
+				return nil;
+			end);
+			if ok and ev then return ev; end;
+			return v;
+		elseif v == "true" then return true;
+		elseif v == "false" then return false;
+		elseif v == "nil" then return nil;
+		elseif tonumber(v) then return tonumber(v);
+		else return v;
+		end;
+	elseif type(v) == "number" or type(v) == "boolean" then return v;
+	elseif type(v) == "table" then
+		local out = {};
+		for k, val in next, v do
+			local pk = tonumber(k) or k;
+			out[pk] = parsearg(val);
+		end;
+		return out;
+	else return v;
+	end;
+end;
+
+gt.exec.fire_remote = function(args)
+	local inst = resolve(args.path);
+	if not inst then return '{"error":"not found: ' .. tostring(args.path) .. '"}'; end;
+	if not inst:IsA("RemoteEvent") and not inst:IsA("RemoteFunction") then
+		return '{"error":"not a remote: ' .. inst.ClassName .. '"}';
+	end;
+	local method = args.method or (inst:IsA("RemoteEvent") and "FireServer" or "InvokeServer");
+	local fargs = {};
+	if args.args and args.args ~= "" then
+		local dok, parsed = pcall(hs.JSONDecode, hs, args.args);
+		if not dok then return '{"error":"bad json args: ' .. tostring(parsed):sub(1, 200) .. '"}'; end;
+		if type(parsed) == "table" then
+			for i, v in next, parsed do
+				fargs[tonumber(i) or i] = parsearg(v);
+			end;
+		end;
+	end;
+	local ok, res = pcall(function()
+		if method == "InvokeServer" then
+			return inst:InvokeServer(unpack(fargs));
+		else
+			inst:FireServer(unpack(fargs));
+			return "fired";
+		end;
+	end);
+	if not ok then return '{"error":"fire failed: ' .. tostring(res):sub(1, 200) .. '"}'; end;
+	local ret = {status = "ok"; method = method; path = gpath(inst); argc = #fargs};
+	if method == "InvokeServer" and res ~= "fired" then
+		ret.result = sarg(res);
+	end;
+	return hs:JSONEncode(ret);
+end;
+
 return gt;
