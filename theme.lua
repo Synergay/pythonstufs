@@ -1,0 +1,52 @@
+local theme = {
+	bg = Color3.fromRGB(30, 30, 30);
+	bg2 = Color3.fromRGB(37, 37, 38);
+	bg3 = Color3.fromRGB(45, 45, 45);
+	accent = Color3.fromRGB(0, 122, 204);
+	accent2 = Color3.fromRGB(14, 99, 156);
+	text = Color3.fromRGB(204, 204, 204);
+	text2 = Color3.fromRGB(150, 150, 150);
+	textdim = Color3.fromRGB(100, 100, 100);
+	border = Color3.fromRGB(60, 60, 60);
+	hover = Color3.fromRGB(55, 55, 55);
+	active = Color3.fromRGB(30, 30, 30);
+	red = Color3.fromRGB(220, 70, 70);
+	green = Color3.fromRGB(80, 200, 120);
+	yellow = Color3.fromRGB(220, 200, 80);
+	orange = Color3.fromRGB(206, 145, 50);
+	blue = Color3.fromRGB(86, 156, 214);
+	purple = Color3.fromRGB(180, 120, 220);
+	title = Color3.fromRGB(50, 50, 50);
+	dropdown = Color3.fromRGB(43, 43, 43);
+	dropdownhvr = Color3.fromRGB(70, 70, 70);
+	scrollbar = Color3.fromRGB(80, 80, 80);
+	tabactive = Color3.fromRGB(30, 30, 30);
+	tabinactive = Color3.fromRGB(45, 45, 45);
+	separator = Color3.fromRGB(70, 70, 70);
+	chatuser = Color3.fromRGB(0, 122, 204);
+	chatai = Color3.fromRGB(180, 120, 220);
+	input = Color3.fromRGB(60, 60, 60);
+
+	font = Font.fromEnum(Enum.Font.RobotoMono);
+	fontui = Font.fromEnum(Enum.Font.Gotham);
+	fontbold = Font.fromEnum(Enum.Font.GothamBold);
+
+	titleh = 30;
+	menuh = 25;
+	tabh = 35;
+	statush = 22;
+	sidebarw = 200;
+	chatw = 280;
+	tabmaxw = 130;
+	tabminw = 28;
+	dropw = 220;
+	droph = 26;
+	corner = UDim.new(0, 4);
+	cornermd = UDim.new(0, 6);
+	cornersm = UDim.new(0, 2);
+	tweenfast = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+	tweenmed = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+	tweenslow = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+};
+
+return theme;
