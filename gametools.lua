@@ -509,44 +509,96 @@ local function isexcluded(rname)
 	return false;
 end;
 
+local ckc = typeof(checkcaller) == "function" and checkcaller or nil;
+local hkfn_fn = typeof(hookfunction) == "function" and hookfunction or nil;
+local hkmm = typeof(hookmetamethod) == "function" and hookmetamethod or nil;
+local oldfs = nil;
+local oldis = nil;
+
+local function logremote(remote, method, args)
+	pcall(function()
+		local rname = remote.Name;
+		if isexcluded(rname) then return; end;
+		if spyfilter and not rname:lower():find(spyfilter, 1, true) then return; end;
+		spyfreq[rname] = (spyfreq[rname] or 0) + 1;
+		local sa = {};
+		for i = 1, #args do sa[i] = sarg(args[i]); end;
+		if #spylog >= spymax then table.remove(spylog, 1); end;
+		table.insert(spylog, {
+			remote = rname;
+			path = gpath(remote);
+			class = remote.ClassName;
+			method = method;
+			args = sa;
+			argc = #args;
+			time = tick();
+		});
+	end);
+end;
+
 local function hookspy()
-	local mt = getrawmetatable(game);
-	if not mt then return false, "getrawmetatable not available"; end;
-	oldnc = mt.__namecall;
-	local hkfn = newcclosure(function(self, ...)
-		local method = getnamecallmethod();
-		if (method == "FireServer" or method == "InvokeServer") and (self:IsA("RemoteEvent") or self:IsA("RemoteFunction")) then
-			local rname = self.Name;
-			local rnl = rname:lower();
-			if not isexcluded(rname) and (not spyfilter or rnl:find(spyfilter, 1, true)) then
-				spyfreq[rname] = (spyfreq[rname] or 0) + 1;
-				local a = {...};
-				local sa = {};
-				for i = 1, #a do sa[i] = sarg(a[i]); end;
-				if #spylog >= spymax then table.remove(spylog, 1); end;
-				table.insert(spylog, {
-					remote = rname;
-					path = gpath(self);
-					class = self.ClassName;
-					method = method;
-					args = sa;
-					argc = #a;
-					time = tick();
-				});
+	if hkmm then
+		oldnc = hkmm(game, "__namecall", newcclosure(function(...)
+			local method = getnamecallmethod();
+			if method == "FireServer" or method == "fireServer" or method == "InvokeServer" or method == "invokeServer" then
+				if typeof((...)) == "Instance" then
+					local remote = (...);
+					if remote:IsA("RemoteEvent") or remote:IsA("RemoteFunction") or remote:IsA("UnreliableRemoteEvent") then
+						if not (ckc and ckc()) then
+							logremote(remote, method, {select(2, ...)});
+						end;
+					end;
+				end;
 			end;
-		end;
-		return oldnc(self, ...);
-	end);
-	local rok = pcall(function()
-		if setreadonly then setreadonly(mt, false); end;
-		mt.__namecall = hkfn;
-		if setreadonly then setreadonly(mt, true); end;
-	end);
-	if not rok then
-		local hok = pcall(function()
-			hookmetamethod(game, "__namecall", hkfn);
+			return oldnc(...);
+		end));
+	else
+		local mt = getrawmetatable(game);
+		if not mt then return false, "getrawmetatable/hookmetamethod not available"; end;
+		oldnc = mt.__namecall;
+		local wrp = newcclosure(function(...)
+			local method = getnamecallmethod();
+			if method == "FireServer" or method == "fireServer" or method == "InvokeServer" or method == "invokeServer" then
+				if typeof((...)) == "Instance" then
+					local remote = (...);
+					if remote:IsA("RemoteEvent") or remote:IsA("RemoteFunction") or remote:IsA("UnreliableRemoteEvent") then
+						if not (ckc and ckc()) then
+							logremote(remote, method, {select(2, ...)});
+						end;
+					end;
+				end;
+			end;
+			return oldnc(...);
 		end);
-		if not hok then return false, "failed to hook __namecall"; end;
+		pcall(function()
+			if setreadonly then setreadonly(mt, false); end;
+			mt.__namecall = wrp;
+			if setreadonly then setreadonly(mt, true); end;
+		end);
+	end;
+	if hkfn_fn then
+		pcall(function()
+			local re = Instance.new("RemoteEvent");
+			local rf = Instance.new("RemoteFunction");
+			oldfs = hkfn_fn(re.FireServer, newcclosure(function(self, ...)
+				if typeof(self) == "Instance" and (self:IsA("RemoteEvent") or self:IsA("UnreliableRemoteEvent")) then
+					if not (ckc and ckc()) then
+						logremote(self, "FireServer", {...});
+					end;
+				end;
+				return oldfs(self, ...);
+			end));
+			oldis = hkfn_fn(rf.InvokeServer, newcclosure(function(self, ...)
+				if typeof(self) == "Instance" and self:IsA("RemoteFunction") then
+					if not (ckc and ckc()) then
+						logremote(self, "InvokeServer", {...});
+					end;
+				end;
+				return oldis(self, ...);
+			end));
+			re:Destroy();
+			rf:Destroy();
+		end);
 	end;
 	return true;
 end;
@@ -554,12 +606,32 @@ end;
 local function unhookspy()
 	if oldnc then
 		pcall(function()
-			local mt = getrawmetatable(game);
-			if setreadonly then setreadonly(mt, false); end;
-			mt.__namecall = oldnc;
-			if setreadonly then setreadonly(mt, true); end;
+			if hkmm then
+				hkmm(game, "__namecall", oldnc);
+			else
+				local mt = getrawmetatable(game);
+				if setreadonly then setreadonly(mt, false); end;
+				mt.__namecall = oldnc;
+				if setreadonly then setreadonly(mt, true); end;
+			end;
 		end);
 		oldnc = nil;
+	end;
+	if oldfs and hkfn_fn then
+		pcall(function()
+			local re = Instance.new("RemoteEvent");
+			hkfn_fn(re.FireServer, oldfs);
+			re:Destroy();
+		end);
+		oldfs = nil;
+	end;
+	if oldis and hkfn_fn then
+		pcall(function()
+			local rf = Instance.new("RemoteFunction");
+			hkfn_fn(rf.InvokeServer, oldis);
+			rf:Destroy();
+		end);
+		oldis = nil;
 	end;
 end;
 
