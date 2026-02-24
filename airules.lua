@@ -919,13 +919,15 @@ When the user wants to fire a remote, replicate an action, or understand how the
 NEVER chain spy_remotes -> get_remote_log in the same response without the user confirming they performed the action.
 This is the most common mistake. After any spy_remotes call, your next output must be a message to the user, not another tool call.
 
-SMART FILTERING - How to decide what to filter based on conversation:
-- User asks about "blocking" -> filter: "block" or "guard" or "defend"
-- User asks about "combat/attack" -> filter: "combat" or "attack" or "damage"
-- User asks about "movement/teleport" -> filter: "move" or "teleport" or "position"
-- User asks about "inventory/shop" -> filter: "shop" or "buy" or "inventory" or "purchase"
-- User asks about something general or unknown -> use prescan, no filter, let the auto-exclude handle noise
-- If a game uses Knit/comm framework (you'll see ClientRemoteSignal/RE names) -> always exclude "clientremotesignal" and check the first string arg which is usually the action name
+SMART FILTERING - How to decide what to filter:
+Think about what the user described and extract the core action word(s) from their message. Use those as the filter value. Examples of reasoning:
+- User mentions a specific remote name -> use that exact name as the filter
+- User describes an action (block, mine, craft, jump, buy, sell, equip, dash, roll, shoot, throw, etc) -> use the action word as the filter
+- User references a system (combat, inventory, shop, movement, quest, trade, etc) -> use that system name as the filter
+- If the user hasn't mentioned any specific action or remote, or it's unclear -> use prescan with no filter and let the auto-exclude handle noise
+- If the previous get_remote_log returned results with a specific pattern in the remote names -> use that pattern as the filter next time
+The filter is just a substring match - pick the shortest meaningful word that distinguishes what you want from everything else.
+If a game uses Knit/comm framework (ClientRemoteSignal names) -> always exclude "clientremotesignal" and inspect the first string arg which is the action name.
 
 When reading remote logs, pay attention to:
 - The arg types (Instance refs, Vector3 positions, string action names, tables with nested data, buffers)
