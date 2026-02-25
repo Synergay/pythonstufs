@@ -14,6 +14,13 @@ function window.new(theme, utils, parent, icons, anim)
 	self._chatvis = true;
 
 	local uis = game:GetService("UserInputService");
+	local vps = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720);
+	local ismobile = vps.X < 800 or uis.TouchEnabled;
+	self._initW = ismobile and math.floor(vps.X * 0.97) or 1140;
+	self._initH = ismobile and math.floor(vps.Y * 0.95) or 650;
+	self._initX = math.floor((vps.X - self._initW) * 0.5);
+	self._initY = math.floor((vps.Y - self._initH) * 0.5);
+	local initW, initH, initX, initY = self._initW, self._initH, self._initX, self._initY;
 
 	self._gui = utils.create("ScreenGui", {
 		Name = "VSCodeUI";
@@ -23,8 +30,8 @@ function window.new(theme, utils, parent, icons, anim)
 	});
 
 	self._main = utils.create("Frame", {
-		Size = UDim2.new(0, 1140, 0, 650);
-		Position = UDim2.new(0.5, -570, 0.5, -325);
+		Size = UDim2.new(0, initW, 0, initH);
+		Position = UDim2.new(0, initX, 0, initY);
 		BackgroundColor3 = theme.bg;
 		BorderSizePixel = 0;
 		ClipsDescendants = true;
@@ -91,16 +98,25 @@ function window.new(theme, utils, parent, icons, anim)
 	mkctrl(ic.maximize, nil, 2, function() self:maximize(); end);
 	mkctrl(ic.x, theme.red, 3, function() self:destroy(); end);
 
-	local dragging, dragstart, startpos;
+	local dragging, dragstart, startpos, dragtouchid;
+	local function isdraginput(input)
+		return input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch;
+	end;
+	local function ismovinput(input)
+		return input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch;
+	end;
 	local c1 = self._titlebar.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if isdraginput(input) and not dragging then
 			dragging = true;
+			dragtouchid = input.UserInputType == Enum.UserInputType.Touch and input or nil;
 			dragstart = input.Position;
 			startpos = self._main.Position;
 		end;
 	end);
 	local c2 = uis.InputChanged:Connect(function(input)
-		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+		if dragging and ismovinput(input) and (dragtouchid == nil or dragtouchid == input) then
 			local delta = input.Position - dragstart;
 			self._main.Position = UDim2.new(
 				startpos.X.Scale, startpos.X.Offset + delta.X,
@@ -109,8 +125,9 @@ function window.new(theme, utils, parent, icons, anim)
 		end;
 	end);
 	local c3 = uis.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
 			dragging = false;
+			dragtouchid = nil;
 		end;
 	end);
 
@@ -239,8 +256,9 @@ function window.new(theme, utils, parent, icons, anim)
 		Parent = self._main;
 	});
 
-	self._sw = theme.sidebarw;
-	self._cw = theme.chatw;
+	local bw = initW - self._actw;
+	self._sw = ismobile and math.max(math.floor(bw * 0.22), 100) or theme.sidebarw;
+	self._cw = ismobile and math.max(math.floor(bw * 0.38), 140) or theme.chatw;
 
 	local lh = utils.create("TextButton", {
 		Size = UDim2.new(0, 4, 1, 0);
@@ -269,29 +287,33 @@ function window.new(theme, utils, parent, icons, anim)
 	self._rhandle = rh;
 
 	local ldrag, rdrag = false, false;
+	local function ispaneldrag(input)
+		return input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch;
+	end;
 	local c4 = lh.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then ldrag = true; end;
+		if ispaneldrag(input) then ldrag = true; end;
 	end);
 	local c5 = rh.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then rdrag = true; end;
+		if ispaneldrag(input) then rdrag = true; end;
 	end);
 	local c6 = uis.InputChanged:Connect(function(input)
-		if input.UserInputType ~= Enum.UserInputType.MouseMovement then return; end;
+		if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return; end;
 		local mx = input.Position.X;
 		local bx = self._body.AbsolutePosition.X;
 		local bw = self._body.AbsoluteSize.X;
 		if ldrag then
-			local nw = math.clamp(mx - bx - self._actw, 80, bw * 0.4);
+			local nw = math.clamp(mx - bx - self._actw, 60, bw * 0.4);
 			self._sw = nw;
 			self:_applyPanels();
 		elseif rdrag then
-			local nw = math.clamp((bx + bw) - mx, 80, bw * 0.5);
+			local nw = math.clamp((bx + bw) - mx, 60, bw * 0.55);
 			self._cw = nw;
 			self:_applyPanels();
 		end;
 	end);
 	local c7 = uis.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			if ldrag then ldrag = false; end;
 			if rdrag then rdrag = false; end;
 		end;
@@ -316,7 +338,7 @@ function window.new(theme, utils, parent, icons, anim)
 			Parent = self._main;
 		});
 		local ec = e.InputBegan:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 				edrag = true;
 				edir = dir;
 				estart = input.Position;
@@ -335,7 +357,7 @@ function window.new(theme, utils, parent, icons, anim)
 	mkedge(UDim2.new(1, 0, 0, 6), UDim2.new(0, 0, 0, -3), "t");
 
 	local c8 = uis.InputChanged:Connect(function(input)
-		if not edrag or input.UserInputType ~= Enum.UserInputType.MouseMovement then return; end;
+		if not edrag or (input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch) then return; end;
 		local dx = input.Position.X - estart.X;
 		local dy = input.Position.Y - estart.Y;
 		local sw, sh = esz.X.Offset, esz.Y.Offset;
@@ -359,7 +381,7 @@ function window.new(theme, utils, parent, icons, anim)
 		self:_applyPanels();
 	end);
 	local c9 = uis.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 and edrag then
+		if (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and edrag then
 			edrag = false;
 			self:_applyPanels();
 		end;
@@ -396,7 +418,7 @@ function window:minimize()
 			a.windowRestore(self._main);
 		else
 			self._utils.tween(self._main, self._theme.tweenmed, {
-				Size = self._savedsize or UDim2.new(0, 1140, 0, 650);
+				Size = self._savedsize or UDim2.new(0, self._initW, 0, self._initH);
 			});
 		end;
 	end;
@@ -415,8 +437,8 @@ function window:maximize()
 			a.windowUnmax(self._main);
 		else
 			self._utils.tween(self._main, self._theme.tweenmed, {
-				Size = self._savedsize or UDim2.new(0, 1140, 0, 650);
-				Position = self._savedpos or UDim2.new(0.5, -570, 0.5, -325);
+				Size = self._savedsize or UDim2.new(0, self._initW, 0, self._initH);
+				Position = self._savedpos or UDim2.new(0, self._initX, 0, self._initY);
 			});
 		end;
 	else
