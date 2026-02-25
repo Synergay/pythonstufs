@@ -4,6 +4,11 @@ local maxdc = 4000;
 local maxsr = 30;
 
 local dcfn = (typeof(decompile) == "function" and decompile) or nil;
+local gsenv = (typeof(getsenv) == "function" and getsenv) or nil;
+local gupvals = (typeof(getupvalues) == "function" and getupvalues) or nil;
+local gconsts = (typeof(getconstants) == "function" and getconstants) or nil;
+local gsclos = (typeof(getscriptclosure) == "function" and getscriptclosure)
+	or (typeof(getscriptfunction) == "function" and getscriptfunction) or nil;
 
 local function resolve(path)
 	if not path or path == "" or path == "game" then return game; end;
@@ -97,7 +102,7 @@ gt.defs = {
 		type = "function";
 		["function"] = {
 			name = "decompile_script";
-			description = "Decompile a ModuleScript, LocalScript, or Script at the given path. Returns decompiled Lua source code (max 4000 chars)";
+			description = "Decompile/analyze a script. Tries: 1) decompile() 2) raw Source 3) fallback analysis via getsenv/getconstants/getupvalues. Returns source or script analysis data";
 			parameters = {
 				type = "object";
 				properties = {
@@ -232,18 +237,69 @@ gt.exec.decompile_script = function(args)
 	if not inst:IsA("LuaSourceContainer") then
 		return '{"error":"not a script: ' .. inst.ClassName .. '"}';
 	end;
-	if not dcfn then
-		local ok, src = pcall(function() return inst.Source; end);
+	if dcfn then
+		local ok, src = pcall(dcfn, inst);
 		if ok and src and #src > 0 then
 			if #src > maxdc then src = src:sub(1, maxdc) .. "\n-- [truncated]"; end;
-			return hs:JSONEncode({path = gpath(inst); source = src; note = "raw Source property"});
+			return hs:JSONEncode({path = gpath(inst); source = src; length = #src});
 		end;
-		return '{"error":"decompile not available in this executor"}';
 	end;
-	local ok, src = pcall(dcfn, inst);
-	if not ok then return '{"error":"decompile failed: ' .. tostring(src):sub(1, 200) .. '"}'; end;
-	if #src > maxdc then src = src:sub(1, maxdc) .. "\n-- [truncated at " .. maxdc .. " chars]"; end;
-	return hs:JSONEncode({path = gpath(inst); source = src; length = #src});
+	local sok, src = pcall(function() return inst.Source; end);
+	if sok and src and #src > 0 then
+		if #src > maxdc then src = src:sub(1, maxdc) .. "\n-- [truncated]"; end;
+		return hs:JSONEncode({path = gpath(inst); source = src; note = "raw Source property"});
+	end;
+	local out = {path = gpath(inst); class = inst.ClassName; method = "analysis"};
+	if gsenv then
+		pcall(function()
+			local senv = gsenv(inst);
+			if senv then
+				local ek = {};
+				for k, v in next, senv do
+					if k ~= "script" then
+						table.insert(ek, {name = tostring(k); type = typeof(v); val = tostring(v):sub(1, 80)});
+					end;
+					if #ek >= 40 then break; end;
+				end;
+				out.env = ek;
+			end;
+		end);
+	end;
+	if gsclos then
+		pcall(function()
+			local cl = gsclos(inst);
+			if cl then
+				if gconsts then
+					local cok, cs = pcall(gconsts, cl);
+					if cok and cs then
+						local clist = {};
+						for i = 1, math.min(#cs, 60) do
+							local v = cs[i];
+							if v ~= nil then table.insert(clist, tostring(v):sub(1, 100)); end;
+						end;
+						out.constants = clist;
+					end;
+				end;
+				if gupvals then
+					local uok, uvs = pcall(gupvals, cl);
+					if uok and uvs then
+						local ulist = {};
+						for k, v in next, uvs do
+							table.insert(ulist, {idx = k; type = typeof(v); val = tostring(v):sub(1, 80)});
+							if #ulist >= 30 then break; end;
+						end;
+						out.upvalues = ulist;
+					end;
+				end;
+			end;
+		end);
+	end;
+	if not out.env and not out.constants and not out.upvalues then
+		out.error = "no decompile/source available, analysis functions also unavailable";
+	end;
+	local r = hs:JSONEncode(out);
+	if #r > maxdc then r = r:sub(1, maxdc) .. "...[trimmed]"; end;
+	return r;
 end;
 
 gt.exec.search_instances = function(args)
