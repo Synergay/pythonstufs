@@ -347,6 +347,7 @@ gt.exec.get_remotes = function(args)
 	local raw = gt.exec.get_remote_spy_logs({limit = args.limit or 50; filter = args.filter});
 	local ok, parsed = pcall(hs.JSONDecode, hs, raw);
 	if not ok or not parsed then return raw; end;
+	if parsed.error then return raw; end;
 	local uniq = {};
 	local rems = {};
 	for _, e in next, parsed.log or {} do
@@ -851,40 +852,6 @@ end;
 table.insert(gt.defs, {
 	type = "function";
 	["function"] = {
-		name = "spy_remotes";
-		description = "Start/stop remote spy. Hooks __namecall to capture FireServer/InvokeServer calls. Has smart filtering: auto-excludes known spammy remotes (heartbeat, replication, sync, physics, etc). You can also pass 'exclude' to blacklist specific remote names, or 'filter' to only capture remotes matching a substring. Use 'prescan' action to do a 3-second scan that identifies high-frequency remotes and auto-excludes them before the real capture starts.";
-		parameters = {
-			type = "object";
-			properties = {
-				action = {type = "string"; description = "start, stop, or prescan. prescan runs a 3s scan then auto-excludes remotes firing >5 times, then continues capturing only the interesting ones."};
-				filter = {type = "string"; description = "Only capture remotes whose name contains this substring (case insensitive)"};
-				exclude = {type = "string"; description = "Comma-separated remote name substrings to exclude. e.g. 'ClientRemoteSignal,replication,update'"};
-				noauto = {type = "boolean"; description = "Set true to disable the built-in auto-exclude of known noisy patterns (heartbeat, sync, etc). Default false."};
-			};
-			required = {"action"};
-		};
-	};
-});
-
-table.insert(gt.defs, {
-	type = "function";
-	["function"] = {
-		name = "get_remote_log";
-		description = "Get captured remote fire log from spy_remotes. Shows remote name, path, method, all args with types (Instance paths, Vector3, CFrame, tables, buffers, etc). Returns newest first. Also returns frequency stats showing which remotes fired most often, so you can identify noisy ones to exclude.";
-		parameters = {
-			type = "object";
-			properties = {
-				count = {type = "number"; description = "Max entries to return (default 20, max 50)"};
-				filter = {type = "string"; description = "Optional remote name substring filter"};
-				stats = {type = "boolean"; description = "If true, only return frequency stats (no log entries). Use to see which remotes are spammy."};
-			};
-		};
-	};
-});
-
-table.insert(gt.defs, {
-	type = "function";
-	["function"] = {
 		name = "fire_remote";
 		description = "Fire a RemoteEvent or invoke a RemoteFunction with specified arguments. Args are JSON-encoded. Supports Instance paths (prefix with 'inst:'), Vector3 (prefix with 'v3:x,y,z'), CFrame (prefix with 'cf:x,y,z'), numbers, booleans, strings, and tables.";
 		parameters = {
@@ -898,78 +865,6 @@ table.insert(gt.defs, {
 		};
 	};
 });
-
-gt.exec.spy_remotes = function(args)
-	local act = args.action and args.action:lower() or "start";
-	if act == "stop" then
-		if not spyactive then return '{"status":"not active"}'; end;
-		unhookspy();
-		spyactive = false;
-		return hs:JSONEncode({status = "stopped"; captured = #spylog; freq = spyfreq});
-	elseif act == "start" or act == "prescan" then
-		if spyactive then unhookspy(); spyactive = false; end;
-		spyfilter = args.filter and args.filter:lower() or nil;
-		spyexclude = {};
-		spyfreq = {};
-		spylog = {};
-		if not args.noauto then
-			for _, kw in next, noisykw do
-				table.insert(spyexclude, kw);
-			end;
-		end;
-		if args.exclude and args.exclude ~= "" then
-			for ex in args.exclude:gmatch("[^,]+") do
-				local trimmed = ex:match("^%s*(.-)%s*$"):lower();
-				if trimmed ~= "" then table.insert(spyexclude, trimmed); end;
-			end;
-		end;
-		local ok, err = hookspy();
-		if not ok then return '{"error":"' .. tostring(err) .. '"}'; end;
-		spyactive = true;
-		if act == "prescan" then
-			task.spawn(function()
-				task.wait(3);
-				if not spyactive then return; end;
-				local threshold = 5;
-				local autoexcl = {};
-				for rname, cnt in next, spyfreq do
-					if cnt >= threshold then
-						table.insert(spyexclude, rname:lower());
-						table.insert(autoexcl, rname .. "(" .. cnt .. ")");
-					end;
-				end;
-				spylog = {};
-				spyfreq = {};
-			end);
-			return hs:JSONEncode({status = "prescanning"; duration = "3s"; threshold = 5; exclude = spyexclude; note = "will auto-exclude remotes firing 5+ times in 3s, then clear log and continue capturing. call get_remote_log after ~4s to see clean results."});
-		end;
-		return hs:JSONEncode({status = "started"; filter = spyfilter; exclude = spyexclude});
-	else
-		return '{"error":"invalid action, use start, stop, or prescan"}';
-	end;
-end;
-
-gt.exec.get_remote_log = function(args)
-	if args.stats then
-		local sorted = {};
-		for rname, cnt in next, spyfreq do
-			table.insert(sorted, {remote = rname; fires = cnt});
-		end;
-		table.sort(sorted, function(a, b) return a.fires > b.fires; end);
-		return hs:JSONEncode({active = spyactive; total_entries = #spylog; stats = sorted});
-	end;
-	local cnt = math.min(tonumber(args.count) or 20, 50);
-	local filt = args.filter and args.filter:lower() or nil;
-	local out = {};
-	for i = #spylog, 1, -1 do
-		if #out >= cnt then break; end;
-		local e = spylog[i];
-		if not filt or e.remote:lower():find(filt, 1, true) then
-			table.insert(out, e);
-		end;
-	end;
-	return hs:JSONEncode({active = spyactive; total = #spylog; shown = #out; freq = spyfreq; log = out});
-end;
 
 local function parsearg(v)
 	if type(v) == "string" then
@@ -1183,24 +1078,7 @@ gt.exec.ensure_remote_spy = function(args)
 		pcall(function() if cb and type(cb.start) == "function" then cb:start(); end; end);
 		return hs:JSONEncode({status = "active"; source = "cobalt"});
 	end;
-	if spyactive then
-		return hs:JSONEncode({status = "already_active"; captured = #spylog; freq = spyfreq; source = "internal"; cobalterr = tostring(cerr or "")});
-	end;
-	spyfilter = args and args.filter and args.filter:lower() or nil;
-	spyexclude = {};
-	spyfreq = {};
-	spylog = {};
-	for _, kw in next, noisykw do table.insert(spyexclude, kw); end;
-	if args and args.exclude and args.exclude ~= "" then
-		for ex in args.exclude:gmatch("[^,]+") do
-			local trimmed = ex:match("^%s*(.-)%s*$"):lower();
-			if trimmed ~= "" then table.insert(spyexclude, trimmed); end;
-		end;
-	end;
-	local ok, err = hookspy();
-	if not ok then return '{"error":"' .. tostring(err) .. '"}'; end;
-	spyactive = true;
-	return hs:JSONEncode({status = "active"; filter = spyfilter; exclude = spyexclude; source = "internal"; cobalterr = tostring(cerr or "")});
+	return hs:JSONEncode({error = "cobalt_load_failed"; source = "cobalt"; details = tostring(cerr or "")});
 end;
 
 gt.exec.get_remote_spy_logs = function(args)
@@ -1217,72 +1095,45 @@ gt.exec.get_remote_spy_logs = function(args)
 		end;
 		return hs:JSONEncode({active = true; source = "cobalt"; total = clog.total; shown = clog.shown; freq = clog.freq; log = clog.log});
 	end;
-	if args.stats then
-		local sorted = {};
-		for rname, cnt in next, spyfreq do
-			table.insert(sorted, {remote = rname; fires = cnt});
-		end;
-		table.sort(sorted, function(a, b) return a.fires > b.fires; end);
-		return hs:JSONEncode({active = spyactive; source = "internal"; total = #spylog; stats = sorted});
-	end;
-	local cnt = math.min(tonumber(args.limit or args.count) or 20, 50);
-	local filt = args.filter and args.filter:lower() or nil;
-	local out = {};
-	for i = #spylog, 1, -1 do
-		if #out >= cnt then break; end;
-		local e = spylog[i];
-		if not filt or e.remote:lower():find(filt, 1, true) then
-			table.insert(out, e);
-		end;
-	end;
-	return hs:JSONEncode({active = spyactive; source = "internal"; total = #spylog; shown = #out; freq = spyfreq; log = out});
+	return hs:JSONEncode({error = "cobalt_logs_unavailable"; source = "cobalt"});
 end;
 
 gt.exec.clear_remote_spy_logs = function()
 	local cb = getcobalt();
-	if cb then
-		pcall(function() if type(cb.ClearLogs) == "function" then cb:ClearLogs(); end; end);
-		pcall(function() if type(cb.clearLogs) == "function" then cb:clearLogs(); end; end);
-		pcall(function() if type(cb.ResetLogs) == "function" then cb:ResetLogs(); end; end);
-		pcall(function() if type(cb.resetLogs) == "function" then cb:resetLogs(); end; end);
-		pcall(function()
-			if type(cb.Logs) == "table" then table.clear(cb.Logs); end;
-			if type(cb.logs) == "table" then table.clear(cb.logs); end;
-		end);
-	end;
-	spylog = {};
-	spyfreq = {};
-	return hs:JSONEncode({status = "cleared"; source = cb and "cobalt" or "internal"});
+	if not cb then return hs:JSONEncode({error = "cobalt_not_loaded"; source = "cobalt"}); end;
+	pcall(function() if type(cb.ClearLogs) == "function" then cb:ClearLogs(); end; end);
+	pcall(function() if type(cb.clearLogs) == "function" then cb:clearLogs(); end; end);
+	pcall(function() if type(cb.ResetLogs) == "function" then cb:ResetLogs(); end; end);
+	pcall(function() if type(cb.resetLogs) == "function" then cb:resetLogs(); end; end);
+	pcall(function()
+		if type(cb.Logs) == "table" then table.clear(cb.Logs); end;
+		if type(cb.logs) == "table" then table.clear(cb.logs); end;
+	end);
+	return hs:JSONEncode({status = "cleared"; source = "cobalt"});
 end;
 
 gt.exec.block_remote = function(args)
 	if not args.name then return '{"error":"no name"}'; end;
-	local n = args.name:lower();
 	local blk = args.block ~= false;
 	local cb = getcobalt();
-	if cb then
-		pcall(function() if type(cb.BlockRemote) == "function" then cb:BlockRemote(args.name, blk); end; end);
-		pcall(function() if type(cb.blockRemote) == "function" then cb:blockRemote(args.name, blk); end; end);
-		pcall(function() if type(cb.SetBlockedRemote) == "function" then cb:SetBlockedRemote(args.name, blk); end; end);
-		pcall(function() if type(cb.setBlockedRemote) == "function" then cb:setBlockedRemote(args.name, blk); end; end);
-	end;
-	if blk then spyblocked[n] = true; else spyblocked[n] = nil; end;
-	return hs:JSONEncode({remote = args.name; blocked = blk; source = cb and "cobalt+internal" or "internal"});
+	if not cb then return hs:JSONEncode({error = "cobalt_not_loaded"; source = "cobalt"}); end;
+	pcall(function() if type(cb.BlockRemote) == "function" then cb:BlockRemote(args.name, blk); end; end);
+	pcall(function() if type(cb.blockRemote) == "function" then cb:blockRemote(args.name, blk); end; end);
+	pcall(function() if type(cb.SetBlockedRemote) == "function" then cb:SetBlockedRemote(args.name, blk); end; end);
+	pcall(function() if type(cb.setBlockedRemote) == "function" then cb:setBlockedRemote(args.name, blk); end; end);
+	return hs:JSONEncode({remote = args.name; blocked = blk; source = "cobalt"});
 end;
 
 gt.exec.ignore_remote = function(args)
 	if not args.name then return '{"error":"no name"}'; end;
-	local n = args.name:lower();
 	local ign = args.ignore ~= false;
 	local cb = getcobalt();
-	if cb then
-		pcall(function() if type(cb.IgnoreRemote) == "function" then cb:IgnoreRemote(args.name, ign); end; end);
-		pcall(function() if type(cb.ignoreRemote) == "function" then cb:ignoreRemote(args.name, ign); end; end);
-		pcall(function() if type(cb.SetIgnoredRemote) == "function" then cb:SetIgnoredRemote(args.name, ign); end; end);
-		pcall(function() if type(cb.setIgnoredRemote) == "function" then cb:setIgnoredRemote(args.name, ign); end; end);
-	end;
-	if ign then spyignored[n] = true; else spyignored[n] = nil; end;
-	return hs:JSONEncode({remote = args.name; ignored = ign; source = cb and "cobalt+internal" or "internal"});
+	if not cb then return hs:JSONEncode({error = "cobalt_not_loaded"; source = "cobalt"}); end;
+	pcall(function() if type(cb.IgnoreRemote) == "function" then cb:IgnoreRemote(args.name, ign); end; end);
+	pcall(function() if type(cb.ignoreRemote) == "function" then cb:ignoreRemote(args.name, ign); end; end);
+	pcall(function() if type(cb.SetIgnoredRemote) == "function" then cb:SetIgnoredRemote(args.name, ign); end; end);
+	pcall(function() if type(cb.setIgnoredRemote) == "function" then cb:setIgnoredRemote(args.name, ign); end; end);
+	return hs:JSONEncode({remote = args.name; ignored = ign; source = "cobalt"});
 end;
 
 gt.exec.click_button = function(args)
@@ -1314,7 +1165,5 @@ gt.exec.type_text_box = function(args)
 	end;
 	return hs:JSONEncode({status = "typed"; path = gpath(inst); text = args.text});
 end;
-
-print("cobaly shite loaded")
 
 return gt;
