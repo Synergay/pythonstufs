@@ -609,57 +609,120 @@ end;
 local function getcobaltlogs(limit, filter)
 	local cb = getcobalt();
 	if not cb then return nil; end;
-	local logs = nil;
-	pcall(function()
-		if type(cb.GetLogs) == "function" then logs = cb:GetLogs(); end;
-	end);
-	if not logs then pcall(function() if type(cb.getLogs) == "function" then logs = cb:getLogs(); end; end); end;
-	if not logs then pcall(function() if type(cb.GetRemoteLogs) == "function" then logs = cb:GetRemoteLogs(); end; end); end;
-	if not logs then pcall(function() if type(cb.getRemoteLogs) == "function" then logs = cb:getRemoteLogs(); end; end); end;
-	if not logs then pcall(function() logs = cb.Logs or cb.logs or cb.RemoteLogs or cb.remoteLogs or cb.Events or cb.events or cb.NetworkLogs or cb.networkLogs; end); end;
-	if not logs then
-		pcall(function()
-			local st = cb.State or cb.state or cb.Store or cb.store;
-			if type(st) == "table" then
-				logs = st.Logs or st.logs or st.RemoteLogs or st.remoteLogs or st.Events or st.events;
-			end;
-		end);
-	end;
-	if not logs then
-		pcall(function()
-			local rs = cb.Remotes or cb.remotes;
-			if type(rs) == "table" then logs = rs.Logs or rs.logs or rs.Events or rs.events; end;
-		end);
-	end;
-	if type(logs) ~= "table" then return nil; end;
 	local lim = math.min(tonumber(limit) or 50, 100);
 	local filt = filter and filter:lower() or nil;
-	local out = {};
-	local freq = {};
-	for i = #logs, 1, -1 do
-		if #out >= lim then break; end;
-		local e = logs[i];
-		local rn = tostring(e.remote or e.remoteName or e.name or e.RemoteName or e.Name or "");
-		if rn ~= "" then
-			if not filt or rn:lower():find(filt, 1, true) then
-				local dir = tostring(e.direction or e.Direction or "Outgoing");
-				local cls = tostring(e.class or e.Class or e.remoteClass or e.RemoteClass or "RemoteEvent");
-				local pth = tostring(e.path or e.Path or e.remotePath or e.RemotePath or "");
-				local args = e.args or e.Arguments or e.calls or e.Calls or {};
-				table.insert(out, {
-					remote = rn;
-					class = cls;
-					direction = dir;
-					path = pth;
-					args = args;
-					argc = type(args) == "table" and #args or 0;
-					time = e.time or e.Time or tick();
-				});
-				freq[rn] = (freq[rn] or 0) + 1;
+	local cands = {};
+	local seen = {};
+	local function addcand(t)
+		if type(t) ~= "table" or seen[t] then return; end;
+		seen[t] = true;
+		table.insert(cands, t);
+	end;
+	pcall(function() if type(cb.GetLogs) == "function" then addcand(cb:GetLogs()); end; end);
+	pcall(function() if type(cb.getLogs) == "function" then addcand(cb:getLogs()); end; end);
+	pcall(function() if type(cb.GetRemoteLogs) == "function" then addcand(cb:GetRemoteLogs()); end; end);
+	pcall(function() if type(cb.getRemoteLogs) == "function" then addcand(cb:getRemoteLogs()); end; end);
+	pcall(function() addcand(cb.Logs or cb.logs or cb.RemoteLogs or cb.remoteLogs or cb.Events or cb.events or cb.NetworkLogs or cb.networkLogs); end);
+	pcall(function()
+		local st = cb.State or cb.state or cb.Store or cb.store;
+		if type(st) == "table" then
+			addcand(st.Logs or st.logs or st.RemoteLogs or st.remoteLogs or st.Events or st.events);
+		end;
+	end);
+	pcall(function()
+		local rs = cb.Remotes or cb.remotes;
+		if type(rs) == "table" then
+			addcand(rs);
+			addcand(rs.Logs or rs.logs or rs.Events or rs.events or rs.Outgoing or rs.outgoing or rs.Incoming or rs.incoming);
+		end;
+	end);
+	local function deepfind(t, depth)
+		if type(t) ~= "table" or depth > 4 or seen[t] then return; end;
+		seen[t] = true;
+		local n = #t;
+		if n > 0 then addcand(t); end;
+		for k, v in next, t do
+			if type(v) == "table" then
+				if type(k) == "string" then
+					local lk = k:lower();
+					if lk:find("log", 1, true) or lk:find("remote", 1, true) or lk:find("event", 1, true) or lk:find("call", 1, true) or lk:find("incoming", 1, true) or lk:find("outgoing", 1, true) then
+						addcand(v);
+					end;
+				end;
+				deepfind(v, depth + 1);
 			end;
 		end;
 	end;
-	return {active = true; total = #logs; shown = #out; freq = freq; log = out; source = "cobalt"};
+	deepfind(cb, 0);
+	local out = {};
+	local freq = {};
+	local function pushentry(rn, cls, dir, pth, args, tm)
+		rn = tostring(rn or "");
+		if rn == "" then return; end;
+		if filt and not rn:lower():find(filt, 1, true) then return; end;
+		if #out >= lim then return; end;
+		table.insert(out, {
+			remote = rn;
+			class = tostring(cls or "RemoteEvent");
+			direction = tostring(dir or "Outgoing");
+			path = tostring(pth or "");
+			args = args or {};
+			argc = type(args) == "table" and #args or 0;
+			time = tm or tick();
+		});
+		freq[rn] = (freq[rn] or 0) + 1;
+	end;
+	for _, logs in next, cands do
+		if #out >= lim then break; end;
+		if type(logs) == "table" then
+			if #logs > 0 then
+				for i = #logs, 1, -1 do
+					if #out >= lim then break; end;
+					local e = logs[i];
+					if type(e) == "table" then
+						local rn = e.remote or e.remoteName or e.name or e.RemoteName or e.Name;
+						local cls = e.class or e.Class or e.remoteClass or e.RemoteClass;
+						local dir = e.direction or e.Direction;
+						local pth = e.path or e.Path or e.remotePath or e.RemotePath;
+						local argsx = e.args or e.Arguments or e.argument or e.Args;
+						if not argsx and type(e.call) == "table" then argsx = e.call.args or e.call.Arguments; end;
+						if not argsx and type(e.calls) == "table" and #e.calls > 0 then
+							local c = e.calls[#e.calls];
+							if type(c) == "table" then argsx = c.args or c.Arguments; end;
+						end;
+						pushentry(rn, cls, dir, pth, argsx or {}, e.time or e.Time);
+					end;
+				end;
+			else
+				for k, v in next, logs do
+					if #out >= lim then break; end;
+					if type(k) == "string" and type(v) == "table" then
+						if type(v.calls) == "table" and #v.calls > 0 then
+							for i = #v.calls, 1, -1 do
+								if #out >= lim then break; end;
+								local c = v.calls[i];
+								if type(c) == "table" then
+									pushentry(k, v.class or v.Class or v.remoteClass or v.RemoteClass, c.direction or c.Direction or v.direction or v.Direction, v.path or v.Path or c.path or c.Path, c.args or c.Arguments or c.Args or {}, c.time or c.Time);
+								end;
+							end;
+						else
+							local cnt = tonumber(v.count or v.total or v.fires) or 1;
+							for _ = 1, math.min(cnt, lim - #out) do
+								pushentry(k, v.class or v.Class or v.remoteClass or v.RemoteClass, v.direction or v.Direction, v.path or v.Path, v.args or v.Arguments or {}, v.time or v.Time);
+								if #out >= lim then break; end;
+							end;
+						end;
+					end;
+				end;
+			end;
+		end;
+	end;
+	local total = 0;
+	for _, logs in next, cands do
+		if type(logs) == "table" then total += #logs; end;
+	end;
+	if #out == 0 then return nil; end;
+	return {active = true; total = total; shown = #out; freq = freq; log = out; source = "cobalt"};
 end;
 
 local consolelog = {};
