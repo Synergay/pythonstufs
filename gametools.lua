@@ -9,6 +9,24 @@ local gupvals = (typeof(getupvalues) == "function" and getupvalues) or nil;
 local gconsts = (typeof(getconstants) == "function" and getconstants) or nil;
 local gsclos = (typeof(getscriptclosure) == "function" and getscriptclosure)
 	or (typeof(getscriptfunction) == "function" and getscriptfunction) or nil;
+local req = (typeof(request) == "function" and request)
+	or (typeof(http_request) == "function" and http_request)
+	or (typeof(syn) == "table" and syn.request)
+	or (typeof(http) == "table" and http.request)
+	or nil;
+
+local function fetchurl(url)
+	if req then
+		local ok, res = pcall(req, {Url = url; Method = "GET"});
+		if ok and res and (res.Success or res.StatusCode == 200) and res.Body then
+			return true, res.Body;
+		end;
+		return false, (res and (res.StatusMessage or res.StatusCode) or "request failed");
+	end;
+	local ok, body = pcall(function() return game:HttpGet(url); end);
+	if ok and body then return true, body; end;
+	return false, body;
+end;
 
 local function resolve(path)
 	if not path or path == "" or path == "game" then return game; end;
@@ -347,6 +365,7 @@ gt.exec.get_remotes = function(args)
 	end;
 	return hs:JSONEncode({
 		mode = "remote_spy";
+		source = parsed.source or "internal";
 		active = parsed.active;
 		captured = parsed.total or 0;
 		unique = #rems;
@@ -543,6 +562,104 @@ local spyexclude = {};
 local spyfreq = {};
 local spyblocked = {};
 local spyignored = {};
+local cobalturl = "https://github.com/notpoiu/cobalt/releases/latest/download/Cobalt.luau";
+local cobaltok = false;
+
+local function getcobalt()
+	local cb = nil;
+	pcall(function()
+		if getgenv then
+			local g = getgenv();
+			cb = g.Cobalt or g.cobalt or g._cobalt or g.COBALT;
+			if not cb and type(g.wax) == "table" and type(g.wax.shared) == "table" then cb = g.wax.shared; end;
+			if not cb and type(g.WAX) == "table" and type(g.WAX.shared) == "table" then cb = g.WAX.shared; end;
+		end;
+	end);
+	if cb then return cb; end;
+	pcall(function()
+		cb = shared and (shared.Cobalt or shared.cobalt or shared._cobalt or shared.COBALT) or nil;
+		if not cb and shared and type(shared.wax) == "table" and type(shared.wax.shared) == "table" then cb = shared.wax.shared; end;
+		if not cb and shared and type(shared.WAX) == "table" and type(shared.WAX.shared) == "table" then cb = shared.WAX.shared; end;
+	end);
+	if cb then return cb; end;
+	pcall(function()
+		cb = _G and (_G.Cobalt or _G.cobalt or _G._cobalt or _G.COBALT) or nil;
+		if not cb and _G and type(_G.wax) == "table" and type(_G.wax.shared) == "table" then cb = _G.wax.shared; end;
+		if not cb and _G and type(_G.WAX) == "table" and type(_G.WAX.shared) == "table" then cb = _G.WAX.shared; end;
+	end);
+	return cb;
+end;
+
+local function loadcobalt()
+	if cobaltok and getcobalt() then return true; end;
+	local ok, err = pcall(function()
+		local fok, src = fetchurl(cobalturl);
+		if not fok then error(tostring(src)); end;
+		local fn = loadstring(src);
+		if fn then fn(); else error("loadstring unavailable"); end;
+	end);
+	if ok then
+		cobaltok = true;
+		return true;
+	end;
+	return false, err;
+end;
+
+local function getcobaltlogs(limit, filter)
+	local cb = getcobalt();
+	if not cb then return nil; end;
+	local logs = nil;
+	pcall(function()
+		if type(cb.GetLogs) == "function" then logs = cb:GetLogs(); end;
+	end);
+	if not logs then pcall(function() if type(cb.getLogs) == "function" then logs = cb:getLogs(); end; end); end;
+	if not logs then pcall(function() if type(cb.GetRemoteLogs) == "function" then logs = cb:GetRemoteLogs(); end; end); end;
+	if not logs then pcall(function() if type(cb.getRemoteLogs) == "function" then logs = cb:getRemoteLogs(); end; end); end;
+	if not logs then pcall(function() logs = cb.Logs or cb.logs or cb.RemoteLogs or cb.remoteLogs or cb.Events or cb.events or cb.NetworkLogs or cb.networkLogs; end); end;
+	if not logs then
+		pcall(function()
+			local st = cb.State or cb.state or cb.Store or cb.store;
+			if type(st) == "table" then
+				logs = st.Logs or st.logs or st.RemoteLogs or st.remoteLogs or st.Events or st.events;
+			end;
+		end);
+	end;
+	if not logs then
+		pcall(function()
+			local rs = cb.Remotes or cb.remotes;
+			if type(rs) == "table" then logs = rs.Logs or rs.logs or rs.Events or rs.events; end;
+		end);
+	end;
+	if type(logs) ~= "table" then return nil; end;
+	local lim = math.min(tonumber(limit) or 50, 100);
+	local filt = filter and filter:lower() or nil;
+	local out = {};
+	local freq = {};
+	for i = #logs, 1, -1 do
+		if #out >= lim then break; end;
+		local e = logs[i];
+		local rn = tostring(e.remote or e.remoteName or e.name or e.RemoteName or e.Name or "");
+		if rn ~= "" then
+			if not filt or rn:lower():find(filt, 1, true) then
+				local dir = tostring(e.direction or e.Direction or "Outgoing");
+				local cls = tostring(e.class or e.Class or e.remoteClass or e.RemoteClass or "RemoteEvent");
+				local pth = tostring(e.path or e.Path or e.remotePath or e.RemotePath or "");
+				local args = e.args or e.Arguments or e.calls or e.Calls or {};
+				table.insert(out, {
+					remote = rn;
+					class = cls;
+					direction = dir;
+					path = pth;
+					args = args;
+					argc = type(args) == "table" and #args or 0;
+					time = e.time or e.Time or tick();
+				});
+				freq[rn] = (freq[rn] or 0) + 1;
+			end;
+		end;
+	end;
+	return {active = true; total = #logs; shown = #out; freq = freq; log = out; source = "cobalt"};
+end;
 
 local consolelog = {};
 local consolemax = 200;
@@ -1059,8 +1176,15 @@ gt.exec.get_console_output = function(args)
 end;
 
 gt.exec.ensure_remote_spy = function(args)
+	local cok, cerr = loadcobalt();
+	if cok then
+		local cb = getcobalt();
+		pcall(function() if cb and type(cb.Start) == "function" then cb:Start(); end; end);
+		pcall(function() if cb and type(cb.start) == "function" then cb:start(); end; end);
+		return hs:JSONEncode({status = "active"; source = "cobalt"});
+	end;
 	if spyactive then
-		return hs:JSONEncode({status = "already_active"; captured = #spylog; freq = spyfreq});
+		return hs:JSONEncode({status = "already_active"; captured = #spylog; freq = spyfreq; source = "internal"; cobalterr = tostring(cerr or "")});
 	end;
 	spyfilter = args and args.filter and args.filter:lower() or nil;
 	spyexclude = {};
@@ -1076,18 +1200,30 @@ gt.exec.ensure_remote_spy = function(args)
 	local ok, err = hookspy();
 	if not ok then return '{"error":"' .. tostring(err) .. '"}'; end;
 	spyactive = true;
-	return hs:JSONEncode({status = "active"; filter = spyfilter; exclude = spyexclude});
+	return hs:JSONEncode({status = "active"; filter = spyfilter; exclude = spyexclude; source = "internal"; cobalterr = tostring(cerr or "")});
 end;
 
 gt.exec.get_remote_spy_logs = function(args)
 	if not args then args = {}; end;
+	local clog = getcobaltlogs(args.limit or args.count, args.filter);
+	if clog then
+		if args.stats then
+			local sorted = {};
+			for rname, cnt in next, clog.freq do
+				table.insert(sorted, {remote = rname; fires = cnt});
+			end;
+			table.sort(sorted, function(a, b) return a.fires > b.fires; end);
+			return hs:JSONEncode({active = true; source = "cobalt"; total = clog.total; stats = sorted});
+		end;
+		return hs:JSONEncode({active = true; source = "cobalt"; total = clog.total; shown = clog.shown; freq = clog.freq; log = clog.log});
+	end;
 	if args.stats then
 		local sorted = {};
 		for rname, cnt in next, spyfreq do
 			table.insert(sorted, {remote = rname; fires = cnt});
 		end;
 		table.sort(sorted, function(a, b) return a.fires > b.fires; end);
-		return hs:JSONEncode({active = spyactive; total = #spylog; stats = sorted});
+		return hs:JSONEncode({active = spyactive; source = "internal"; total = #spylog; stats = sorted});
 	end;
 	local cnt = math.min(tonumber(args.limit or args.count) or 20, 50);
 	local filt = args.filter and args.filter:lower() or nil;
@@ -1099,29 +1235,54 @@ gt.exec.get_remote_spy_logs = function(args)
 			table.insert(out, e);
 		end;
 	end;
-	return hs:JSONEncode({active = spyactive; total = #spylog; shown = #out; freq = spyfreq; log = out});
+	return hs:JSONEncode({active = spyactive; source = "internal"; total = #spylog; shown = #out; freq = spyfreq; log = out});
 end;
 
 gt.exec.clear_remote_spy_logs = function()
+	local cb = getcobalt();
+	if cb then
+		pcall(function() if type(cb.ClearLogs) == "function" then cb:ClearLogs(); end; end);
+		pcall(function() if type(cb.clearLogs) == "function" then cb:clearLogs(); end; end);
+		pcall(function() if type(cb.ResetLogs) == "function" then cb:ResetLogs(); end; end);
+		pcall(function() if type(cb.resetLogs) == "function" then cb:resetLogs(); end; end);
+		pcall(function()
+			if type(cb.Logs) == "table" then table.clear(cb.Logs); end;
+			if type(cb.logs) == "table" then table.clear(cb.logs); end;
+		end);
+	end;
 	spylog = {};
 	spyfreq = {};
-	return '{"status":"cleared"}';
+	return hs:JSONEncode({status = "cleared"; source = cb and "cobalt" or "internal"});
 end;
 
 gt.exec.block_remote = function(args)
 	if not args.name then return '{"error":"no name"}'; end;
 	local n = args.name:lower();
 	local blk = args.block ~= false;
+	local cb = getcobalt();
+	if cb then
+		pcall(function() if type(cb.BlockRemote) == "function" then cb:BlockRemote(args.name, blk); end; end);
+		pcall(function() if type(cb.blockRemote) == "function" then cb:blockRemote(args.name, blk); end; end);
+		pcall(function() if type(cb.SetBlockedRemote) == "function" then cb:SetBlockedRemote(args.name, blk); end; end);
+		pcall(function() if type(cb.setBlockedRemote) == "function" then cb:setBlockedRemote(args.name, blk); end; end);
+	end;
 	if blk then spyblocked[n] = true; else spyblocked[n] = nil; end;
-	return hs:JSONEncode({remote = args.name; blocked = blk});
+	return hs:JSONEncode({remote = args.name; blocked = blk; source = cb and "cobalt+internal" or "internal"});
 end;
 
 gt.exec.ignore_remote = function(args)
 	if not args.name then return '{"error":"no name"}'; end;
 	local n = args.name:lower();
 	local ign = args.ignore ~= false;
+	local cb = getcobalt();
+	if cb then
+		pcall(function() if type(cb.IgnoreRemote) == "function" then cb:IgnoreRemote(args.name, ign); end; end);
+		pcall(function() if type(cb.ignoreRemote) == "function" then cb:ignoreRemote(args.name, ign); end; end);
+		pcall(function() if type(cb.SetIgnoredRemote) == "function" then cb:SetIgnoredRemote(args.name, ign); end; end);
+		pcall(function() if type(cb.setIgnoredRemote) == "function" then cb:setIgnoredRemote(args.name, ign); end; end);
+	end;
 	if ign then spyignored[n] = true; else spyignored[n] = nil; end;
-	return hs:JSONEncode({remote = args.name; ignored = ign});
+	return hs:JSONEncode({remote = args.name; ignored = ign; source = cb and "cobalt+internal" or "internal"});
 end;
 
 gt.exec.click_button = function(args)
@@ -1153,5 +1314,7 @@ gt.exec.type_text_box = function(args)
 	end;
 	return hs:JSONEncode({status = "typed"; path = gpath(inst); text = args.text});
 end;
+
+print("cobaly shite loaded")
 
 return gt;
