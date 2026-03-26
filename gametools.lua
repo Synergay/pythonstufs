@@ -132,11 +132,13 @@ gt.defs = {
 		type = "function";
 		["function"] = {
 			name = "get_remotes";
-			description = "Find all RemoteEvents, RemoteFunctions, BindableEvents, BindableFunctions under a path";
+			description = "Get remotes from captured Cobalt-style traffic (not static tree scan). Ensures remote spy is active, optionally waits for calls, then returns unique remotes observed from logs.";
 			parameters = {
 				type = "object";
 				properties = {
-					path = {type = "string"; description = "Instance path to search under. Defaults to game if empty"};
+					wait = {type = "number"; description = "Seconds to wait after ensuring spy so traffic can be captured. Default 1.5"};
+					limit = {type = "number"; description = "Max log entries to inspect (default 50)"};
+					filter = {type = "string"; description = "Optional remote name substring filter"};
 				};
 			};
 		};
@@ -319,16 +321,38 @@ gt.exec.search_instances = function(args)
 end;
 
 gt.exec.get_remotes = function(args)
-	local parent = resolve(args.path or "game");
-	if not parent then return '{"error":"not found: ' .. tostring(args.path) .. '"}'; end;
+	if not args then args = {}; end;
+	if gt.exec.ensure_remote_spy then gt.exec.ensure_remote_spy({filter = args.filter}); end;
+	local waitt = tonumber(args.wait) or 1.5;
+	if waitt > 0 then task.wait(math.clamp(waitt, 0, 8)); end;
+	if not gt.exec.get_remote_spy_logs then return '{"error":"remote spy logs function unavailable"}'; end;
+	local raw = gt.exec.get_remote_spy_logs({limit = args.limit or 50; filter = args.filter});
+	local ok, parsed = pcall(hs.JSONDecode, hs, raw);
+	if not ok or not parsed then return raw; end;
+	local uniq = {};
 	local rems = {};
-	for _, v in next, parent:GetDescendants() do
-		if #rems >= maxsr then break; end;
-		if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") or v:IsA("BindableEvent") or v:IsA("BindableFunction") then
-			table.insert(rems, fmti(v));
+	for _, e in next, parsed.log or {} do
+		local k = tostring(e.remote or "") .. "|" .. tostring(e.class or "") .. "|" .. tostring(e.path or "");
+		if k ~= "||" and not uniq[k] then
+			uniq[k] = true;
+			table.insert(rems, {
+				name = e.remote;
+				class = e.class;
+				path = e.path;
+				method = e.method;
+				calls = parsed.freq and parsed.freq[e.remote] or nil;
+			});
 		end;
+		if #rems >= maxsr then break; end;
 	end;
-	return hs:JSONEncode({count = #rems; capped = #rems >= maxsr; remotes = rems});
+	return hs:JSONEncode({
+		mode = "remote_spy";
+		active = parsed.active;
+		captured = parsed.total or 0;
+		unique = #rems;
+		remotes = rems;
+		note = "results come from observed traffic. if empty, trigger gameplay/actions and call again.";
+	});
 end;
 
 gt.exec.get_player_info = function()
