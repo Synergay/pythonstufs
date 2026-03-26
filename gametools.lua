@@ -517,6 +517,17 @@ local oldnc = nil;
 local spyfilter = nil;
 local spyexclude = {};
 local spyfreq = {};
+local spyblocked = {};
+local spyignored = {};
+
+local consolelog = {};
+local consolemax = 200;
+pcall(function()
+	game:GetService("LogService").MessageOut:Connect(function(msg, msgtype)
+		if #consolelog >= consolemax then table.remove(consolelog, 1); end;
+		table.insert(consolelog, {msg = msg:sub(1, 500); type = tostring(msgtype); time = tick()});
+	end);
+end);
 
 local noisykw = {"heartbeat","replication","update","sync","ping","tick","physics","clientremotesignal","replicate","stream","poll","keep_alive","keepalive","clientevent"};
 
@@ -559,6 +570,7 @@ end;
 
 local function isexcluded(rname)
 	local ln = rname:lower();
+	if spyignored[ln] then return true; end;
 	for _, ex in next, spyexclude do
 		if ln:find(ex, 1, true) then return true; end;
 	end;
@@ -603,6 +615,7 @@ local function hookspy()
 						if not (ckc and ckc()) then
 							logremote(remote, method, {select(2, ...)});
 						end;
+						if spyblocked[remote.Name:lower()] then return; end;
 					end;
 				end;
 			end;
@@ -621,6 +634,7 @@ local function hookspy()
 						if not (ckc and ckc()) then
 							logremote(remote, method, {select(2, ...)});
 						end;
+						if spyblocked[remote.Name:lower()] then return; end;
 					end;
 				end;
 			end;
@@ -641,6 +655,7 @@ local function hookspy()
 					if not (ckc and ckc()) then
 						logremote(self, "FireServer", {...});
 					end;
+					if spyblocked[self.Name:lower()] then return; end;
 				end;
 				return oldfs(self, ...);
 			end));
@@ -649,6 +664,7 @@ local function hookspy()
 					if not (ckc and ckc()) then
 						logremote(self, "InvokeServer", {...});
 					end;
+					if spyblocked[self.Name:lower()] then return; end;
 				end;
 				return oldis(self, ...);
 			end));
@@ -883,6 +899,235 @@ gt.exec.fire_remote = function(args)
 		ret.result = sarg(res);
 	end;
 	return hs:JSONEncode(ret);
+end;
+
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "execute"; description = "Execute Lua code in the game client. Does NOT return output - use get_data_by_code if you need results."; parameters = {type = "object"; properties = {code = {type = "string"; description = "Lua code to execute"}}; required = {"code"}}}});
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "get_data_by_code"; description = "Execute Lua code and return the result. Code MUST return a value. Do NOT JSONEncode yourself - raw values are auto-serialized."; parameters = {type = "object"; properties = {code = {type = "string"; description = "Lua code that returns a value"}}; required = {"code"}}}});
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "get_script_content"; description = "Get decompiled/analyzed source of a script. Tries decompile(), raw Source, then fallback analysis via getsenv/getconstants/getupvalues."; parameters = {type = "object"; properties = {path = {type = "string"; description = "Instance path to the script"}}; required = {"path"}}}});
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "search_scripts_sources"; description = "Search across all scripts by their source code content. Returns matching scripts with context lines around matches."; parameters = {type = "object"; properties = {query = {type = "string"; description = "String to search for in script sources"}; limit = {type = "number"; description = "Max results (default 20)"}}; required = {"query"}}}});
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "get_descendants_tree"; description = "Returns a structured hierarchy tree of an instance's descendants showing names, classes, and nesting. Depth-limited and optionally filtered by class."; parameters = {type = "object"; properties = {root = {type = "string"; description = "Instance path e.g. game.Workspace"}; maxDepth = {type = "number"; description = "Max depth (default 3)"}; maxChildren = {type = "number"; description = "Max children per node (default 30)"}; classFilter = {type = "string"; description = "Only show instances IsA this class"}}; required = {"root"}}}});
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "get_console_output"; description = "Retrieve recent console/output log messages from the game."; parameters = {type = "object"; properties = {limit = {type = "number"; description = "Max entries (default 30)"}}}}});
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "ensure_remote_spy"; description = "Load/ensure the remote spy is active. Hooks all RemoteEvents/RemoteFunctions outgoing calls. Must be called before get_remote_spy_logs."; parameters = {type = "object"; properties = {filter = {type = "string"; description = "Only capture remotes matching this substring"}; exclude = {type = "string"; description = "Comma-separated remote names to exclude"}}}}});
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "get_remote_spy_logs"; description = "Get captured remote call logs. Returns remote name, class, method, args with types. Also returns frequency stats."; parameters = {type = "object"; properties = {limit = {type = "number"; description = "Max entries (default 20)"}; filter = {type = "string"; description = "Filter by remote name substring"}; stats = {type = "boolean"; description = "If true, only return frequency stats"}}}}});
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "clear_remote_spy_logs"; description = "Clear all captured remote spy logs."; parameters = {type = "object"; properties = {}}}});
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "block_remote"; description = "Block/unblock a remote. Blocked remotes have their calls prevented from reaching the server."; parameters = {type = "object"; properties = {name = {type = "string"; description = "Remote name to block/unblock"}; block = {type = "boolean"; description = "true to block, false to unblock (default true)"}}; required = {"name"}}}});
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "ignore_remote"; description = "Ignore/unignore a remote in spy logs. Ignored remotes still fire but won't be logged."; parameters = {type = "object"; properties = {name = {type = "string"; description = "Remote name to ignore/unignore"}; ignore = {type = "boolean"; description = "true to ignore, false to unignore (default true)"}}; required = {"name"}}}});
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "click_button"; description = "Simulate a click on a TextButton or ImageButton by firing its signals via firesignal."; parameters = {type = "object"; properties = {path = {type = "string"; description = "Instance path to the button"}}; required = {"path"}}}});
+table.insert(gt.defs, {type = "function"; ["function"] = {name = "type_text_box"; description = "Type text into a TextBox instance."; parameters = {type = "object"; properties = {path = {type = "string"; description = "Instance path to the TextBox"}; text = {type = "string"; description = "Text to type"}; enter = {type = "boolean"; description = "Simulate Enter after typing"}}; required = {"path", "text"}}}});
+
+gt.exec.execute = function(args)
+	if not args.code or args.code == "" then return '{"error":"no code"}'; end;
+	local fn, cerr = loadstring(args.code);
+	if not fn then return '{"error":"syntax: ' .. tostring(cerr):sub(1, 200) .. '"}'; end;
+	local ok, rerr = pcall(fn);
+	if not ok then return '{"error":"runtime: ' .. tostring(rerr):sub(1, 200) .. '"}'; end;
+	return '{"status":"executed"}';
+end;
+
+gt.exec.get_data_by_code = function(args)
+	if not args.code or args.code == "" then return '{"error":"no code"}'; end;
+	local fn, cerr = loadstring(args.code);
+	if not fn then return '{"error":"syntax: ' .. tostring(cerr):sub(1, 200) .. '"}'; end;
+	local ok, res = pcall(fn);
+	if not ok then return '{"error":"runtime: ' .. tostring(res):sub(1, 200) .. '"}'; end;
+	local function ser(v)
+		local t = typeof(v);
+		if t == "Instance" then return {type = t; value = gpath(v); class = v.ClassName};
+		elseif t == "table" then
+			local out = {}; local cnt = 0;
+			for k, val in next, v do
+				if cnt >= 50 then out["_truncated"] = true; break; end;
+				out[tostring(k)] = ser(val); cnt += 1;
+			end;
+			return {type = "table"; value = out};
+		elseif t == "string" then return {type = t; value = v:sub(1, 2000)};
+		elseif t == "number" or t == "boolean" then return {type = t; value = v};
+		elseif t == "Vector3" then return {type = t; value = {x = v.X; y = v.Y; z = v.Z}};
+		elseif t == "CFrame" then return {type = t; value = tostring(v):sub(1, 200)};
+		elseif t == "Color3" then return {type = t; value = {r = v.R; g = v.G; b = v.B}};
+		elseif t == "EnumItem" then return {type = t; value = tostring(v)};
+		elseif t == "nil" then return {type = "nil"};
+		else return {type = t; value = tostring(v):sub(1, 500)}; end;
+	end;
+	local sok, sres = pcall(function() return hs:JSONEncode(ser(res)); end);
+	if sok then return sres; end;
+	return hs:JSONEncode({type = typeof(res); value = tostring(res):sub(1, 2000)});
+end;
+
+gt.exec.get_script_content = gt.exec.decompile_script;
+
+gt.exec.search_scripts_sources = function(args)
+	if not args.query or args.query == "" then return '{"error":"no query"}'; end;
+	local lim = math.min(tonumber(args.limit) or 20, 40);
+	local q = args.query;
+	local results = {};
+	pcall(function()
+		for _, v in next, game:GetDescendants() do
+			if #results >= lim then break; end;
+			if v:IsA("LuaSourceContainer") then
+				local sok, src = pcall(function() return v.Source; end);
+				if not sok or not src or src == "" then
+					if dcfn then pcall(function() src = dcfn(v); end); end;
+				end;
+				if src and src ~= "" then
+					local pos = src:find(q, 1, true);
+					if pos then
+						local ln = 1;
+						for _ in src:sub(1, pos):gmatch("\n") do ln += 1; end;
+						local cs = math.max(1, pos - 80);
+						local ce = math.min(#src, pos + #q + 80);
+						table.insert(results, {path = gpath(v); class = v.ClassName; line = ln; context = src:sub(cs, ce)});
+					end;
+				end;
+			end;
+		end;
+	end);
+	return hs:JSONEncode({query = q; count = #results; results = results});
+end;
+
+gt.exec.get_descendants_tree = function(args)
+	local root = resolve(args.root or "game");
+	if not root then return '{"error":"not found: ' .. tostring(args.root) .. '"}'; end;
+	local maxd = math.min(tonumber(args.maxDepth) or 3, 6);
+	local maxc = math.min(tonumber(args.maxChildren) or 30, 50);
+	local cf = args.classFilter;
+	local function bld(inst, depth)
+		if depth > maxd then return nil; end;
+		local node = {name = inst.Name; class = inst.ClassName};
+		local ch = {};
+		local children = inst:GetChildren();
+		local shown = 0;
+		for _, c in next, children do
+			if shown >= maxc then break; end;
+			if cf then
+				local isa = pcall(function() return c:IsA(cf); end) and c:IsA(cf);
+				if isa then
+					local cn = bld(c, depth + 1);
+					if cn then table.insert(ch, cn); shown += 1; end;
+				else
+					local cn = bld(c, depth + 1);
+					if cn and cn.children and #cn.children > 0 then
+						table.insert(ch, cn); shown += 1;
+					end;
+				end;
+			else
+				local cn = bld(c, depth + 1);
+				if cn then table.insert(ch, cn); shown += 1; end;
+			end;
+		end;
+		if #ch > 0 then node.children = ch; end;
+		if #children > maxc then node.truncated = #children - maxc; end;
+		return node;
+	end;
+	local tree = bld(root, 0);
+	local r = hs:JSONEncode(tree);
+	if #r > 8000 then r = r:sub(1, 8000) .. "...[truncated]"; end;
+	return r;
+end;
+
+gt.exec.get_console_output = function(args)
+	local lim = math.min(tonumber(args.limit) or 30, 100);
+	local out = {};
+	for i = math.max(1, #consolelog - lim + 1), #consolelog do
+		table.insert(out, consolelog[i]);
+	end;
+	return hs:JSONEncode({count = #out; total = #consolelog; logs = out});
+end;
+
+gt.exec.ensure_remote_spy = function(args)
+	if spyactive then
+		return hs:JSONEncode({status = "already_active"; captured = #spylog; freq = spyfreq});
+	end;
+	spyfilter = args and args.filter and args.filter:lower() or nil;
+	spyexclude = {};
+	spyfreq = {};
+	spylog = {};
+	for _, kw in next, noisykw do table.insert(spyexclude, kw); end;
+	if args and args.exclude and args.exclude ~= "" then
+		for ex in args.exclude:gmatch("[^,]+") do
+			local trimmed = ex:match("^%s*(.-)%s*$"):lower();
+			if trimmed ~= "" then table.insert(spyexclude, trimmed); end;
+		end;
+	end;
+	local ok, err = hookspy();
+	if not ok then return '{"error":"' .. tostring(err) .. '"}'; end;
+	spyactive = true;
+	return hs:JSONEncode({status = "active"; filter = spyfilter; exclude = spyexclude});
+end;
+
+gt.exec.get_remote_spy_logs = function(args)
+	if not args then args = {}; end;
+	if args.stats then
+		local sorted = {};
+		for rname, cnt in next, spyfreq do
+			table.insert(sorted, {remote = rname; fires = cnt});
+		end;
+		table.sort(sorted, function(a, b) return a.fires > b.fires; end);
+		return hs:JSONEncode({active = spyactive; total = #spylog; stats = sorted});
+	end;
+	local cnt = math.min(tonumber(args.limit or args.count) or 20, 50);
+	local filt = args.filter and args.filter:lower() or nil;
+	local out = {};
+	for i = #spylog, 1, -1 do
+		if #out >= cnt then break; end;
+		local e = spylog[i];
+		if not filt or e.remote:lower():find(filt, 1, true) then
+			table.insert(out, e);
+		end;
+	end;
+	return hs:JSONEncode({active = spyactive; total = #spylog; shown = #out; freq = spyfreq; log = out});
+end;
+
+gt.exec.clear_remote_spy_logs = function()
+	spylog = {};
+	spyfreq = {};
+	return '{"status":"cleared"}';
+end;
+
+gt.exec.block_remote = function(args)
+	if not args.name then return '{"error":"no name"}'; end;
+	local n = args.name:lower();
+	local blk = args.block ~= false;
+	if blk then spyblocked[n] = true; else spyblocked[n] = nil; end;
+	return hs:JSONEncode({remote = args.name; blocked = blk});
+end;
+
+gt.exec.ignore_remote = function(args)
+	if not args.name then return '{"error":"no name"}'; end;
+	local n = args.name:lower();
+	local ign = args.ignore ~= false;
+	if ign then spyignored[n] = true; else spyignored[n] = nil; end;
+	return hs:JSONEncode({remote = args.name; ignored = ign});
+end;
+
+gt.exec.click_button = function(args)
+	local inst = resolve(args.path);
+	if not inst then return '{"error":"not found: ' .. tostring(args.path) .. '"}'; end;
+	if not inst:IsA("GuiButton") then return '{"error":"not a button: ' .. inst.ClassName .. '"}'; end;
+	local fs = typeof(firesignal) == "function" and firesignal or nil;
+	if fs then
+		pcall(fs, inst.Activated);
+		pcall(fs, inst.MouseButton1Click);
+		pcall(fs, inst.MouseButton1Down);
+		pcall(fs, inst.MouseButton1Up);
+	else
+		pcall(function() inst.MouseButton1Click:Fire(); end);
+	end;
+	return hs:JSONEncode({status = "clicked"; path = gpath(inst); class = inst.ClassName});
+end;
+
+gt.exec.type_text_box = function(args)
+	local inst = resolve(args.path);
+	if not inst then return '{"error":"not found: ' .. tostring(args.path) .. '"}'; end;
+	if not inst:IsA("TextBox") then return '{"error":"not a textbox: ' .. inst.ClassName .. '"}'; end;
+	inst.Text = args.text or "";
+	if args.enter then
+		pcall(function()
+			local fs = typeof(firesignal) == "function" and firesignal or nil;
+			if fs then fs(inst.FocusLost, true); end;
+		end);
+	end;
+	return hs:JSONEncode({status = "typed"; path = gpath(inst); text = args.text});
 end;
 
 return gt;
